@@ -3,82 +3,46 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QR Code Scanner</title>
+    <title>Serial Number Checker</title>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        #canvas {
-            width: 100%;
-            max-width: 500px;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-        }
-        .scanning-line {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 2px;
-            background: rgba(34, 197, 94, 0.7);
-            box-shadow: 0 0 8px rgba(34, 197, 94, 0.9);
-            animation: scan 2s linear infinite;
-        }
-        @keyframes scan {
-            0% { top: 0%; }
-            100% { top: 100%; }
-        }
-    </style>
-</head>
-<body class="bg-slate-50 min-h-screen flex flex-col items-center p-4 font-sans text-slate-800">
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-    <div class="max-w-md w-full space-y-6">
-        <header class="text-center space-y-2">
-            <h1 class="text-3xl font-bold text-slate-900">QRコードスキャナー</h1>
-            <p class="text-slate-500 text-sm">カメラをQRコードに向けてください</p>
-        </header>
+        // Firebase Configuration
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'serial-checker';
 
-        <!-- Video Preview Container -->
-        <div class="relative overflow-hidden bg-black rounded-2xl aspect-square flex items-center justify-center">
-            <canvas id="canvas" hidden></canvas>
-            <div id="loadingMessage" class="text-white text-center p-4">
-                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-2"></div>
-                カメラを起動中...
-            </div>
-            <div id="scanLine" class="scanning-line hidden"></div>
-        </div>
-
-        <!-- Result Section -->
-        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
-            <div class="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">読み取り結果</span>
-                <button id="copyBtn" class="hidden text-blue-500 hover:text-blue-600 text-sm font-medium transition-colors">
-                    コピー
-                </button>
-            </div>
-            <div id="outputContainer" class="min-h-[60px] break-all">
-                <p id="outputMessage" class="text-slate-400 italic">QRコードを検出していません</p>
-                <p id="outputData" class="hidden text-lg font-medium text-slate-900"></p>
-            </div>
-        </div>
-
-        <button id="restartBtn" class="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 transition-all active:scale-[0.98]">
-            再読み取り
-        </button>
-    </div>
-
-    <script>
+        // UI Elements
         const video = document.createElement("video");
         const canvasElement = document.getElementById("canvas");
         const canvas = canvasElement.getContext("2d", { willReadFrequently: true });
         const loadingMessage = document.getElementById("loadingMessage");
-        const outputContainer = document.getElementById("outputContainer");
         const outputMessage = document.getElementById("outputMessage");
         const outputData = document.getElementById("outputData");
-        const copyBtn = document.getElementById("copyBtn");
-        const scanLine = document.getElementById("scanLine");
+        const statusBadge = document.getElementById("statusBadge");
         const restartBtn = document.getElementById("restartBtn");
+        const scanLine = document.getElementById("scanLine");
 
         let isScanning = true;
+        let user = null;
+
+        // Initialize Auth
+        async function initAuth() {
+            try {
+                await signInAnonymously(auth);
+            } catch (error) {
+                console.error("Auth error:", error);
+            }
+        }
+        initAuth();
+        onAuthStateChanged(auth, (u) => { user = u; });
 
         function drawLine(begin, end, color) {
             canvas.beginPath();
@@ -89,20 +53,69 @@
             canvas.stroke();
         }
 
-        // Use facingMode: environment to attempt to get the front camera on phones
+        // Camera Setup
         navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } }).then(function(stream) {
             video.srcObject = stream;
-            video.setAttribute("playsinline", true); // required to tell iOS safari we don't want fullscreen
+            video.setAttribute("playsinline", true);
             video.play();
             requestAnimationFrame(tick);
         }).catch(err => {
-            loadingMessage.innerText = "カメラにアクセスできませんでした: " + err.message;
+            loadingMessage.innerText = "カメラを起動できませんでした。";
         });
+
+        // Check serial in database
+        async function checkSerialNumber(serial) {
+            if (!user) return;
+            
+            // Path: /artifacts/{appId}/public/data/serials/{serial}
+            const serialDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'serials', serial);
+            
+            try {
+                const docSnap = await getDoc(serialDocRef);
+
+                if (docSnap.exists()) {
+                    // Already exists
+                    showResult(serial, "USED");
+                } else {
+                    // New serial, save it
+                    await setDoc(serialDocRef, {
+                        serial: serial,
+                        usedAt: serverTimestamp(),
+                        userId: user.uid
+                    });
+                    showResult(serial, "NEW");
+                }
+            } catch (error) {
+                console.error("Database error:", error);
+                showResult(serial, "ERROR");
+            }
+        }
+
+        function showResult(serial, status) {
+            isScanning = false;
+            scanLine.classList.add('hidden');
+            outputMessage.hidden = true;
+            outputData.innerText = serial;
+            outputData.classList.remove('hidden');
+            statusBadge.classList.remove('hidden');
+
+            if (status === "USED") {
+                statusBadge.innerText = "⚠️ 使用済み";
+                statusBadge.className = "px-3 py-1 rounded-full text-sm font-bold bg-red-100 text-red-600";
+            } else if (status === "NEW") {
+                statusBadge.innerText = "✅ 登録完了 (新規)";
+                statusBadge.className = "px-3 py-1 rounded-full text-sm font-bold bg-green-100 text-green-600";
+            } else {
+                statusBadge.innerText = "❌ エラーが発生しました";
+                statusBadge.className = "px-3 py-1 rounded-full text-sm font-bold bg-gray-100 text-gray-600";
+            }
+
+            if (window.navigator.vibrate) window.navigator.vibrate(200);
+        }
 
         function tick() {
             if (!isScanning) return;
 
-            loadingMessage.innerText = "⌛ 読み込み中...";
             if (video.readyState === video.HAVE_ENOUGH_DATA) {
                 loadingMessage.hidden = true;
                 canvasElement.hidden = false;
@@ -113,9 +126,7 @@
                 canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
                 
                 const imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
-                const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                    inversionAttempts: "dontInvert",
-                });
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
 
                 if (code) {
                     drawLine(code.location.topLeftCorner, code.location.topRightCorner, "#22c55e");
@@ -123,44 +134,59 @@
                     drawLine(code.location.bottomRightCorner, code.location.bottomLeftCorner, "#22c55e");
                     drawLine(code.location.bottomLeftCorner, code.location.topLeftCorner, "#22c55e");
                     
-                    outputMessage.hidden = true;
-                    outputData.parentElement.classList.remove('hidden');
-                    outputData.innerText = code.data;
-                    outputData.classList.remove('hidden');
-                    copyBtn.classList.remove('hidden');
-                    
-                    // Optional: Vibrate on mobile
-                    if (window.navigator.vibrate) window.navigator.vibrate(200);
-                    
-                    // Pause scanning after success
-                    isScanning = false;
-                    scanLine.classList.add('hidden');
+                    // シリアルナンバーのチェック開始
+                    checkSerialNumber(code.data);
                 }
             }
             requestAnimationFrame(tick);
         }
 
-        copyBtn.addEventListener('click', () => {
-            const text = outputData.innerText;
-            const tempInput = document.createElement("input");
-            tempInput.value = text;
-            document.body.appendChild(tempInput);
-            tempInput.select();
-            document.execCommand("copy");
-            document.body.removeChild(tempInput);
-            
-            const originalText = copyBtn.innerText;
-            copyBtn.innerText = "コピー完了！";
-            setTimeout(() => copyBtn.innerText = originalText, 2000);
-        });
-
         restartBtn.addEventListener('click', () => {
             isScanning = true;
             outputData.classList.add('hidden');
+            statusBadge.classList.add('hidden');
             outputMessage.hidden = false;
-            copyBtn.classList.add('hidden');
             requestAnimationFrame(tick);
         });
     </script>
+    <style>
+        #canvas { width: 100%; border-radius: 12px; }
+        .scanning-line {
+            position: absolute; top: 0; left: 0; width: 100%; height: 3px;
+            background: #22c55e; animation: scan 2s linear infinite;
+        }
+        @keyframes scan { 0% { top: 0%; } 100% { top: 100%; } }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen flex flex-col items-center p-4 font-sans text-slate-800">
+
+    <div class="max-w-md w-full space-y-6">
+        <header class="text-center">
+            <h1 class="text-2xl font-bold text-slate-900">シリアルチェッカー</h1>
+            <p class="text-slate-500 text-sm">重複登録を防止します</p>
+        </header>
+
+        <div class="relative overflow-hidden bg-black rounded-2xl aspect-square flex items-center justify-center">
+            <canvas id="canvas" hidden></canvas>
+            <div id="loadingMessage" class="text-white text-center p-4">カメラを起動中...</div>
+            <div id="scanLine" class="scanning-line hidden"></div>
+        </div>
+
+        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4">
+            <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-slate-400 uppercase tracking-widest">Result</span>
+                <div id="statusBadge" class="hidden"></div>
+            </div>
+            <div id="outputContainer" class="min-h-[40px] flex items-center justify-center border-t border-slate-50 pt-4">
+                <p id="outputMessage" class="text-slate-400 italic">QRコードをスキャンしてください</p>
+                <p id="outputData" class="hidden text-xl font-mono font-bold text-slate-900 bg-slate-100 px-3 py-1 rounded"></p>
+            </div>
+        </div>
+
+        <button id="restartBtn" class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transition-all">
+            次のスキャン
+        </button>
+    </div>
+
 </body>
 </html>
