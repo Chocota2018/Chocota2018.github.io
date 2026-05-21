@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>カメラ監視 — ホスト</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@300;500;700&display=swap');
+
+  :root {
+    --bg: #050a0e;
+    --surface: #0b1520;
+    --panel: #0d1f2d;
+    --accent: #00e5ff;
+    --accent2: #ff4060;
+    --text: #c8e6f0;
+    --muted: #4a7a8a;
+    --border: #1a3a4a;
+    --green: #00ff88;
+    --yellow: #ffd700;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Scanlines overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    height: 56px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 18px;
+    color: var(--accent);
+    letter-spacing: 3px;
+    text-shadow: 0 0 12px rgba(0,229,255,0.5);
+  }
+
+  .logo span { color: var(--muted); font-size: 12px; }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .stat {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .stat .val {
+    color: var(--accent);
+    font-size: 15px;
+  }
+
+  .ws-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--accent2);
+    transition: background 0.3s;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .ws-dot.connected { background: var(--green); }
+
+  .clock {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 14px;
+    color: var(--accent);
+    letter-spacing: 2px;
+  }
+
+  /* Layout controls */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 24px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .toolbar label {
+    font-size: 13px;
+    color: var(--muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .layout-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 4px 12px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 1px;
+  }
+
+  .layout-btn:hover, .layout-btn.active {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: rgba(0,229,255,0.05);
+    box-shadow: 0 0 8px rgba(0,229,255,0.2);
+  }
+
+  .sep { flex: 1; }
+
+  #empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: calc(100vh - 120px);
+    gap: 16px;
+    color: var(--muted);
+  }
+
+  .empty-icon {
+    width: 80px; height: 80px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    color: var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .empty-icon::after {
+    content: '';
+    position: absolute;
+    top: -100%;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--accent);
+    animation: scan 2s ease-in-out infinite;
+    opacity: 0.4;
+  }
+
+  @keyframes scan {
+    from { top: -5%; }
+    to { top: 105%; }
+  }
+
+  #empty-state p {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 2px;
+    text-align: center;
+  }
+
+  #empty-state .url {
+    color: var(--accent);
+    font-size: 12px;
+    background: var(--panel);
+    padding: 8px 16px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    letter-spacing: 1px;
+  }
+
+  /* Camera grid */
+  #grid {
+    display: grid;
+    gap: 2px;
+    padding: 2px;
+    min-height: calc(100vh - 120px);
+    align-content: start;
+  }
+
+  #grid.layout-1 { grid-template-columns: 1fr; }
+  #grid.layout-2 { grid-template-columns: repeat(2, 1fr); }
+  #grid.layout-3 { grid-template-columns: repeat(3, 1fr); }
+  #grid.layout-4 { grid-template-columns: repeat(4, 1fr); }
+  #grid.layout-auto { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+
+  /* Camera card */
+  .cam-card {
+    position: relative;
+    background: var(--surface);
+    aspect-ratio: 16/9;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    animation: fadeIn 0.3s ease;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  .cam-card video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  /* Corner brackets */
+  .cam-card::before,
+  .cam-card::after {
+    content: '';
+    position: absolute;
+    width: 16px; height: 16px;
+    z-index: 10;
+    pointer-events: none;
+  }
+  .cam-card::before {
+    top: 6px; left: 6px;
+    border-top: 2px solid var(--accent);
+    border-left: 2px solid var(--accent);
+    box-shadow: -2px -2px 8px rgba(0,229,255,0.3);
+  }
+  .cam-card::after {
+    bottom: 6px; right: 6px;
+    border-bottom: 2px solid var(--accent);
+    border-right: 2px solid var(--accent);
+    box-shadow: 2px 2px 8px rgba(0,229,255,0.3);
+  }
+
+  .cam-label {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 20px 10px 8px;
+    background: linear-gradient(transparent, rgba(0,0,0,0.8));
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    z-index: 5;
+  }
+
+  .cam-id { color: var(--accent); }
+  .cam-name { color: var(--text); }
+  .cam-status { color: var(--green); display: flex; align-items: center; gap: 4px; }
+  .cam-status::before {
+    content: '';
+    width: 5px; height: 5px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: blink 1.2s ease-in-out infinite;
+    box-shadow: 0 0 4px var(--green);
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .cam-connecting {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--muted);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    letter-spacing: 2px;
+    z-index: 3;
+  }
+
+  .spinner {
+    width: 36px; height: 36px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .fullscreen-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    width: 28px; height: 28px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    z-index: 10;
+    transition: all 0.2s;
+    backdrop-filter: blur(4px);
+  }
+
+  .fullscreen-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* Timestamp overlay */
+  .cam-time {
+    position: absolute;
+    top: 8px;
+    left: 26px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 10px;
+    color: rgba(0,229,255,0.6);
+    letter-spacing: 1px;
+    z-index: 5;
+    pointer-events: none;
+  }
+
+  /* Noise removed indicator when disconnected */
+  .cam-offline {
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      45deg,
+      rgba(0,0,0,0.6) 0px,
+      rgba(0,0,0,0.6) 4px,
+      rgba(20,30,35,0.6) 4px,
+      rgba(20,30,35,0.6) 8px
+    );
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--accent2);
+    letter-spacing: 3px;
+    z-index: 4;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">CAMVIEW<span> // HOST CONSOLE</span></div>
+  <div class="status-bar">
+    <div class="stat">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsStatus">OFFLINE</span>
+    </div>
+    <div class="stat">FEEDS: <span class="val" id="feedCount">0</span></div>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <label>LAYOUT:</label>
+  <button class="layout-btn" data-cols="1">1×1</button>
+  <button class="layout-btn" data-cols="2">2×2</button>
+  <button class="layout-btn" data-cols="3">3×3</button>
+  <button class="layout-btn" data-cols="4">4×4</button>
+  <button class="layout-btn active" data-cols="auto">AUTO</button>
+  <div class="sep"></div>
+  <div class="stat" style="font-size:11px;">
+    <span style="color:var(--muted)">CLIENT URL: </span>
+    <span style="color:var(--accent)" id="clientUrl">loading...</span>
+  </div>
+</div>
+
+<div id="empty-state">
+  <div class="empty-icon">⬛</div>
+  <p>WAITING FOR CLIENTS</p>
+  <div class="url">クライアントURL: <span id="clientUrlEmpty"></span></div>
+</div>
+
+<div id="grid" class="layout-auto" style="display:none;"></div>
+
+<script>
+  // Clock
+  function updateClock() {
+    const now = new Date();
+    document.getElementById('clock').textContent =
+      now.toTimeString().slice(0,8);
+  }
+  setInterval(updateClock, 1000);
+  updateClock();
+
+  // Client URL display
+  const clientUrl = location.origin + '/client';
+  document.getElementById('clientUrl').textContent = clientUrl;
+  document.getElementById('clientUrlEmpty').textContent = clientUrl;
+
+  // Layout buttons
+  const grid = document.getElementById('grid');
+  document.querySelectorAll('.layout-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.layout-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const cols = btn.dataset.cols;
+      grid.className = 'layout-' + cols;
+    });
+  });
+
+  // WebRTC peer connections
+  const peerConnections = new Map(); // clientId -> RTCPeerConnection
+  const cards = new Map(); // clientId -> DOM element
+
+  // WebSocket
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${wsProto}//${location.host}`);
+
+  const wsDot = document.getElementById('wsDot');
+  const wsStatus = document.getElementById('wsStatus');
+
+  ws.addEventListener('open', () => {
+    wsDot.classList.add('connected');
+    wsStatus.textContent = 'ONLINE';
+    ws.send(JSON.stringify({ type: 'register-host' }));
+  });
+
+  ws.addEventListener('close', () => {
+    wsDot.classList.remove('connected');
+    wsStatus.textContent = 'OFFLINE';
+  });
+
+  ws.addEventListener('message', async (ev) => {
+    const msg = JSON.parse(ev.data);
+
+    switch (msg.type) {
+      case 'client-list':
+        for (const c of msg.clients) {
+          addClient(c.id, c.name);
+        }
+        break;
+
+      case 'client-joined':
+        addClient(msg.id, msg.name);
+        break;
+
+      case 'client-left':
+        removeClient(msg.id);
+        break;
+
+      case 'offer':
+        await handleOffer(msg.from, msg.sdp);
+        break;
+
+      case 'ice-candidate':
+        if (msg.from && peerConnections.has(msg.from)) {
+          try {
+            await peerConnections.get(msg.from).addIceCandidate(msg.candidate);
+          } catch(e) { console.warn('ICE add failed', e); }
+        }
+        break;
+    }
+  });
+
+  function updateEmptyState() {
+    const empty = document.getElementById('empty-state');
+    const count = cards.size;
+    document.getElementById('feedCount').textContent = count;
+    if (count === 0) {
+      empty.style.display = 'flex';
+      grid.style.display = 'none';
+    } else {
+      empty.style.display = 'none';
+      grid.style.display = 'grid';
+    }
+  }
+
+  function addClient(id, name) {
+    if (cards.has(id)) return;
+
+    const card = document.createElement('div');
+    card.className = 'cam-card';
+    card.id = `card-${id}`;
+    card.innerHTML = `
+      <div class="cam-connecting" id="connecting-${id}">
+        <div class="spinner"></div>
+        <span>CONNECTING...</span>
+      </div>
+      <video id="video-${id}" autoplay playsinline muted></video>
+      <div class="cam-time" id="time-${id}"></div>
+      <div class="cam-label">
+        <span class="cam-id">CAM-${String(id).padStart(3,'0')}</span>
+        <span class="cam-name">${name}</span>
+        <span class="cam-status" id="status-${id}">LIVE</span>
+      </div>
+      <button class="fullscreen-btn" title="全画面" onclick="toggleFullscreen(${id})">⛶</button>
+    `;
+
+    grid.appendChild(card);
+    cards.set(id, card);
+    updateEmptyState();
+
+    // Update time overlay per card
+    const timeEl = card.querySelector(`#time-${id}`);
+    setInterval(() => {
+      timeEl.textContent = new Date().toTimeString().slice(0,8);
+    }, 1000);
+
+    // Request stream from client
+    ws.send(JSON.stringify({ type: 'request-stream', to: id }));
+  }
+
+  function removeClient(id) {
+    const card = cards.get(id);
+    if (card) {
+      card.remove();
+      cards.delete(id);
+    }
+    const pc = peerConnections.get(id);
+    if (pc) {
+      pc.close();
+      peerConnections.delete(id);
+    }
+    updateEmptyState();
+  }
+
+  async function handleOffer(fromId, sdp) {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    peerConnections.set(fromId, pc);
+
+    pc.addEventListener('track', (ev) => {
+      const video = document.getElementById(`video-${fromId}`);
+      const connecting = document.getElementById(`connecting-${fromId}`);
+      if (video && ev.streams[0]) {
+        video.srcObject = ev.streams[0];
+        if (connecting) connecting.style.display = 'none';
+      }
+    });
+
+    pc.addEventListener('icecandidate', (ev) => {
+      if (ev.candidate) {
+        ws.send(JSON.stringify({
+          type: 'ice-candidate',
+          to: fromId,
+          candidate: ev.candidate
+        }));
+      }
+    });
+
+    pc.addEventListener('connectionstatechange', () => {
+      const statusEl = document.getElementById(`status-${fromId}`);
+      const connecting = document.getElementById(`connecting-${fromId}`);
+      if (!statusEl) return;
+      if (pc.connectionState === 'connected') {
+        statusEl.textContent = 'LIVE';
+        statusEl.style.color = 'var(--green)';
+        if (connecting) connecting.style.display = 'none';
+      } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+        statusEl.textContent = 'LOST';
+        statusEl.style.color = 'var(--accent2)';
+      }
+    });
+
+    await pc.setRemoteDescription({ type: 'offer', sdp });
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    ws.send(JSON.stringify({ type: 'answer', to: fromId, sdp: answer.sdp }));
+  }
+
+  function toggleFullscreen(id) {
+    const card = document.getElementById(`card-${id}`);
+    if (!document.fullscreenElement) {
+      card.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "camera-monitor",
+  "version": "1.0.0",
+  "description": "WebRTC camera monitoring system — view all client cameras from a host dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
